@@ -1,6 +1,6 @@
 c_sequence
 ==========
-A sample C parser application using (JavaCC)[https://javacc.java.net/]
+A sample C parser application using [JavaCC](https://javacc.java.net/)
 
 Build
 -----
@@ -24,6 +24,7 @@ TODO
 ----
 * build and run xvcg
   * apply patch included in ubuntu package
+* output static call graph as dot, graphviz file
 
 ----
 Takashi Masuyama < mamewotoko@gmail.com >  

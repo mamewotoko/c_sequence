@@ -1,0 +1,17 @@
+language: java
+jdk:
+  - oraclejdk8
+  - oraclejdk7
+  - openjdk8
+  - openjdk7
+
+install:
+  - wget https://java.net/projects/javacc/downloads/download/javacc-6.0.zip
+  - unzip javacc-6.0.zip
+  - mv javacc-6.0/bin ~/bin
+  - export PATH=$HOME/bin:$PATH
+  
+script:
+  - make
+  - java -jar classes/c.jar example/hello.c
+
