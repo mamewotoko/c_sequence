@@ -1,0 +1,905 @@
+/*
+  Compile: make #
+
+  C grammar defintion for use with JavaCC
+  Contributed by Doug South (dsouth@squirrel.com.au) 21/3/97
+
+  This parser assumes that the C source file has been preprocessed : all
+  #includes have been included and all macros have been expanded. I accomplish
+  this with "gcc -P -E <source file> > <output file>".
+
+  There is a problem with compiler specific types, such as __signed, __const,
+  __inline__, etc. These types can be added as typedef types before the parser
+  is run on a file. See main() for an example. I have also found a strange little
+  compiler specific "type" if you can call it that. It is __attribute__, but it
+  does not seem to be used as a type. I found that just deleting the __attribute__
+  and the following "offensive" code works.
+
+  This grammar also prints out all the types defined while parsing the file. This
+  is done via a call to printTypes() when the parser is complete. If you do not want
+  this, just comment out the printTypes() method call in the production rule
+  TranslationUnit(), which BTW is the root node for parsing a C source file.
+
+  I have not in anyway extensively tested this grammar, in fact it is barely tested,
+  but I imagine it is better to have a starting point for a C grammar other than from
+  scratch. It has not been optimized in anyway, my main aim was to get a parser that
+  works. Lookahead may not be optimum at choice points and may even be insufficient at
+  times. I choose to err on the side of not optimum if I made a choice at all.
+
+  If you use this grammar, I would appreciate hearing from you. I will try to maintain
+  this grammar to the best of my ability, but at this point in time, this is only a side
+  hobby (unless someone wants to pay me for doing JavaCC work!). In that regards, I am
+  interested in hearing bugs and comments.
+
+  TODO:
+
+    Insert the appropiate code to enable C source trees from this grammar.
+    comma in declaration
+
+*/
+
+options {
+    STATIC = false;
+    ERROR_REPORTING = true;
+    //DEBUG_PARSER = true;
+}
+
+PARSER_BEGIN(CParser)
+
+import java.util.*;
+import java.io.*;
+
+public class CParser{
+
+    String _filename = null;
+    static boolean _verbose = false;
+    static boolean _adhoc_mode = false;
+    static boolean _vcg_mode = false;
+
+    //static boolean _trace_mode = false;
+
+    public String getFilename() 
+    {
+	return _filename;
+    }
+
+    public static String getBasename(String path)
+    {
+	int pos = path.lastIndexOf(File.pathSeparatorChar);
+	return path.substring(pos+1, path.length());
+    }
+
+    public static class MetaInfo {
+	public MetaInfo(String filename, int startline, int startcolumn)
+	{
+	    _filename = filename;
+	    _startline = startline;
+	    _startcolumn = startcolumn;
+	}
+
+	public int getStartLine()
+	{
+	    return _startline;
+	}
+
+	public int getStartColumn()
+	{
+	    return _startcolumn;
+	}
+
+	public String getFilename() 
+	{
+	    return _filename;
+	}
+
+	public String xmlOfPosition()
+	{
+	    return " startline=\"" + _startline +"\" startcolumn=\"" + _startcolumn + "\" filename=\""
+		+ _filename + "\"";
+	}
+
+	public int _startline;
+	public int _startcolumn;
+	public String _filename;
+    }
+
+    public static class FileInfo extends MetaInfo {
+	Vector _functions = null;
+	
+	public FileInfo(String filename, Vector functions) 
+	{
+	    super(filename, 0, 0);
+	    _functions = functions;
+	}
+	
+	public String toXML()
+	{
+	    StringBuffer sb = new StringBuffer();
+	    //sb.append("<file name=\"" + getBasename(_filename) +"\" " +xmlOfPosition() + ">\n");
+	    sb.append("<" + getBasename(_filename) +" " +xmlOfPosition() + ">\n");
+ 	    for(int i = 0; i < _functions.size(); i++) {
+		sb.append("  " + ((FunctionInfo) _functions.get(i)).toXML());
+ 	    }
+	    //sb.append("</file>\n");
+	    sb.append("</" + getBasename(_filename) + ">\n");
+	    return sb.toString();
+	}
+    }
+
+    public static class FunctionInfo extends MetaInfo {
+	String _name = null;
+	Vector _calls = null;
+
+	public FunctionInfo(String filename, String name, Vector calls, int startline, int startcolumn) 
+	{
+	    super(filename, startline, startcolumn);
+	    _name = name;
+	    _calls = calls;
+	}
+	
+	public String getName()
+	{
+	    return _name;
+	}
+	
+	public Vector getCalls()
+	{
+	    return _calls;
+	}
+	
+	public String toXML() 
+	{
+	    StringBuffer sb = new StringBuffer();
+	    //sb.append("    <function name=\"" +_name +"\" " +xmlOfPosition()+ ">\n");
+	    sb.append("    <" +_name +" " +xmlOfPosition()+ " kind=\"method\">\n");
+	    for(int i = 0; i < _calls.size(); i++) {
+		sb.append(((CallInfo) _calls.get(i)).toXML());
+	    }
+	    //sb.append("    </function>\n");
+	    sb.append("    </"+_name+">\n");
+
+	    return sb.toString();
+	}
+    }
+    
+    public static class CallInfo extends MetaInfo {
+	String _name = null;
+
+	public CallInfo(String filename, String name, int startline, int startcolumn) 
+	{
+	    super(filename, startline, startcolumn);
+	    _name = name;
+	}
+
+	public String getName()
+	{
+	    return _name;
+	}
+
+	public String toXML()
+	{
+	    //return "      <call name=\""+_name+"\" " + xmlOfPosition() + " />\n";
+	    return "      <"+_name+" " + xmlOfPosition() + " kind=\"call\" />\n";
+	}
+    }
+
+    // Hastable for storing typedef types
+    private static Hashtable types = null;
+
+    // Stack for determining when the parser
+    // is parsing a typdef definition.
+    private static Stack typedefParsingStack = new Stack();
+
+    // Returns true if the given string is
+    // a typedef type.
+    private static boolean isType(String type)
+    {
+	if(types.get(type) != null){
+	    return true;
+      }
+	return false;
+    }
+
+    // Add a typedef type to those already defined
+    private static void addType(String type)
+      {
+   	  types.put(type, Boolean.TRUE);
+    }
+
+    // Prints out all the types used in parsing the c source
+    private static void printTypes()
+    {
+	Enumeration e = types.keys();
+	while(e.hasMoreElements()){
+	    System.out.println(e.nextElement());
+	}
+    }
+
+    public void setFilename(String filename)
+    {
+	_filename = filename;
+    }
+
+    protected void token_error() 
+    {
+	System.err.println(this.getFilename()+"error!!");
+    }
+
+    public static void initTypes() 
+    {
+	// Hack to include type "special types"
+	types = new Hashtable();
+	addType("__signed__");
+	addType("__const");
+	addType("__inline__");
+	addType("__signed");
+	if(_adhoc_mode) {
+	    addType("char");
+	    addType("int");
+	    addType("size_t");
+	    addType("time_t");
+	}
+    }
+	
+    // Run the parser
+    public static void main ( String args [ ] ) 
+    {
+      CParser parser ;
+      int argindex = 0;
+      initTypes();
+      for(argindex = 0; argindex < args.length; argindex++) {
+	  if(args[argindex].equals("-verbose")) {
+	      _verbose = true;
+	  }
+	  else if(args[argindex].equals("-adhoc")) {
+	      _adhoc_mode = true;
+	  }
+	  else if(args[argindex].equals("-vcg")) {
+	      _vcg_mode = true;
+	  }
+// 	  else if(args[argindex].equals("-trace")) {
+// 	      _trace_mode = true;
+// 	  }
+	  else if(args[argindex].equals("-t") || args[argindex].equals("-type")) {
+	      System.err.println("You are using adhoc feature!! -t or -type");
+
+	      if(argindex + 1 < args.length) {
+		  argindex++;
+		  addType(args[argindex]);
+	      }
+	      else {
+		  System.err.println("-t / -type TYPE_NAME_TO_ADD");
+	      }
+	  }
+	  else {
+	      break;
+	  }
+      }
+
+      StringBuffer sb = new StringBuffer();
+      int from_index = argindex;
+      final int[] start_pos = new int[args.length-argindex];
+      final int[] end_pos = new int[args.length-argindex];
+      final String[] filenames = new String[args.length-argindex];
+
+      Vector functions = new Vector();
+      for( int i = 0; i < args.length - argindex; i++) {
+	  String current_filename = args[argindex+i];
+	  filenames[i] = current_filename;
+
+	  try {
+	      parser = new CParser(new java.io.FileInputStream(current_filename));
+	      parser.setFilename(current_filename);
+	  }
+	  catch(java.io.FileNotFoundException e){
+	      e.printStackTrace();
+	      System.exit(1);
+	      return;
+	  }
+	  
+	  try {
+	      //if(_trace_mode) 
+	      //parser.enable_tracing();
+	      start_pos[i] = functions.size();
+	      parser.TranslationUnit(functions);
+	      end_pos[i] = functions.size();
+	  }
+	  catch(ParseException e){
+	      System.err.print(parser.getFilename()+":"+e.currentToken.next.beginLine+":");    
+	      e.printStackTrace();
+	      System.out.println("TYPES ---");
+	      printTypes();
+	      System.out.println("---------");
+	      System.exit(2);
+	  }
+      }
+
+      if(_verbose)
+	  System.out.println("FINISHED: " + functions.size());
+      //output
+
+      
+      if(_vcg_mode) {
+	  VCG.Graph g = new VCG.Graph();
+	  for(int i = 0; i < functions.size(); i++) {
+	      FunctionInfo fi = (FunctionInfo) functions.get(i);
+	      VCG.Node node = new VCG.Node(fi.getName(), fi.getName());
+	      node.setColor("yellowgreen");
+
+	      g.addNode(node);
+	      Vector calls = fi.getCalls();
+	      for(int j = 0; j < calls.size(); j++) {
+		  CallInfo ci = (CallInfo)calls.get(j);
+		  g.addEdge(new VCG.Edge(fi.getName(), ci.getName()));
+		  g.addNode(new VCG.Node(ci.getName(), ci.getName()));
+	      }
+	  }
+
+	  System.out.println(g.toVCG());
+      }
+      else {
+	  System.out.println("<?xml version=\"1.0\" encoding=\"euc-jp\"?>\n<files>");
+	  for(int fileindex = 0; fileindex < filenames.length; fileindex++) {
+	      String filename = filenames[fileindex];
+	      System.out.println("<"+ filename+">");
+	      for(int i = start_pos[fileindex]; i < end_pos[fileindex]; i++) {
+		  System.out.print(((FunctionInfo) functions.get(i)).toXML());
+	      }
+	      System.out.println("</" + filename + ">");
+	  }
+	  System.out.println("</files>");
+      }
+    }
+  }
+
+PARSER_END(CParser)
+
+SKIP : {
+ " "
+|  "\t"
+|  "\f"
+|  "\n"
+|  "\r"
+|  <"#" (~["\n","\r"])* ("\n" | "\r" | "\r\n")>
+|  <"//" (~["\n","\r"])* ("\n" | "\r" | "\r\n")>
+|  <"/*" (~["*"])* "*" ("*" | ~["*","/"] (~["*"])* "*")* "/">
+}
+
+TOKEN : {
+ <INTEGER_LITERAL: <DECIMAL_LITERAL> (["l","L", "U" ])? | <HEX_LITERAL> (["l","L", "U" ])? | <OCTAL_LITERAL> (["l","L", "U"])?>
+|  <#DECIMAL_LITERAL: ["1"-"9"] (["0"-"9"])*>
+|  <#HEX_LITERAL: "0" ["x","X"] (["0"-"9","a"-"f","A"-"F"])+>
+|  <#OCTAL_LITERAL: "0" (["0"-"7"])*>
+|  <FLOATING_POINT_LITERAL: (["0"-"9"])+ "." (["0"-"9"])* (<EXPONENT>)? (["f","F","d","D"])? | "." (["0"-"9"])+ (<EXPONENT>)? (["f","F","d","D"])? | (["0"-"9"])+ <EXPONENT> (["f","F","d","D"])? | (["0"-"9"])+ (<EXPONENT>)? ["f","F","d","D"]>
+|  <#EXPONENT: ["e","E"] (["+","-"])? (["0"-"9"])+>
+|  <CHARACTER_LITERAL: "\'" (~["\'","\\","\n","\r"] | "\\" (["a","b","n","v","t","r","f","\\","\'","\""] | ["0"-"7"] (["0"-"7"])? | ["0"-"3"] ["0"-"7"] ["0"-"7"])) "\'">
+|  <STRING_LITERAL: "\"" (~["\"","\\","\n","\r"] | "\\" (["a","b","n","v","t","r","f","\\","\'","\""] | ["0"-"7"] (["0"-"7"])? | ["0"-"3"] ["0"-"7"] ["0"-"7"]))* "\"">
+}
+
+TOKEN : {
+	<CONTINUE: "continue"> |
+	<VOLATILE: "volatile"> |
+	<REGISTER: "register"> |
+	<UNSIGNED: "unsigned"> |
+	<TYPEDEF: "typedef"> |
+	<DFLT: "default"> |
+	<DOUBLE: "double"> |
+	<SIZEOF: "sizeof"> |
+	<SWITCH: "switch"> |
+	<RETURN: "return"> |
+	<EXTERN: "extern"> |
+	<STRUCT: "struct"> |
+	<STATIC: "static"> |
+	<SIGNED: "signed"> |
+	<WHILE: "while"> |
+	<BREAK: "break"> |
+	<UNION: "union"> |
+	<CONST: "const"> |
+	<FLOAT: "float"> |
+	<SHORT: "short"> |
+	<ELSE: "else"> |
+	<CASE: "case"> |
+	<LONG: "long"> |
+	<ENUM: "enum"> |
+	<AUTO: "auto"> |
+       <ASMLINKAGE: "asmlinkage"> | //gcc extension
+       <EXTENSION: "__extension__"> | //gcc extension
+	<VOID: "void"> |
+	<CHAR: "char"> |
+	<GOTO: "goto"> |
+	<FOR: "for"> |
+	<INT: "int"> |
+	<IF: "if"> |
+	<DO: "do">
+}
+
+TOKEN : {
+ <IDENTIFIER: <LETTER> (<LETTER> | <DIGIT>)*>
+|  <#LETTER: ["$","A"-"Z","_","a"-"z"]>
+|  <#DIGIT: ["0"-"9"]>
+}
+
+Vector TranslationUnit(Vector functions) : 
+{
+
+}
+{
+	(ExternalDeclaration(functions))+
+	    { return functions; }
+}
+
+void ExternalDeclaration(Vector functions) : 
+{
+    FunctionInfo fi = null;
+}
+{
+	( LOOKAHEAD( FunctionDefinition() ) (fi = FunctionDefinition()) | Declaration(new Vector()))
+	    { if(fi != null) {
+		functions.add(fi);
+	    }}
+}
+
+FunctionInfo FunctionDefinition() : 
+{
+    Token function_name = null;
+    Vector calls = new Vector();
+}
+{
+	[LOOKAHEAD(DeclarationSpecifiers()) DeclarationSpecifiers()]
+	    (function_name = Declarator()) [ DeclarationList(calls) ]
+	CompoundStatement(calls)
+	    { if(function_name != null) {
+		return new FunctionInfo(_filename, function_name.image, calls, function_name.beginLine, function_name.beginColumn);
+	    }}
+}
+
+void Declaration(Vector calls) : {}
+{
+	DeclarationSpecifiers() [ InitDeclaratorList(calls) ] ";"
+}
+
+void DeclarationList(Vector calls) : {}
+{
+	( LOOKAHEAD(Declaration(new Vector())) Declaration(calls) )+
+}
+
+void DeclarationSpecifiers() : {}
+{
+    (StorageClassSpecifier() [ LOOKAHEAD(DeclarationSpecifiers())
+	        DeclarationSpecifiers() ] {
+	if(_verbose)
+	    System.err.println("Storage"); }) |
+	( TypeSpecifier()  [ LOOKAHEAD(DeclarationSpecifiers())
+			     DeclarationSpecifiers() ] { 
+	    if(_verbose)
+		System.err.println("Type");}) |
+	(TypeQualifier() [ LOOKAHEAD(DeclarationSpecifiers())
+			   DeclarationSpecifiers() ] { 
+	    if(_verbose)
+		System.err.println("TypeQualifier");})
+}
+
+void StorageClassSpecifier() : {
+    Token t = null;
+}
+{
+    ( t = <AUTO> | t =<REGISTER> | <STATIC> | <EXTERN> | t = <ASMLINKAGE> |
+      (t = <TYPEDEF>)
+	{
+	    if(_verbose)
+		System.out.println("StructDeclarationList: PUSH");
+	    typedefParsingStack.push(Boolean.TRUE);
+	    if(_verbose)
+  	      System.out.println("typedefParsingStack.empty()?: " + typedefParsingStack.empty());
+	} )
+}
+
+void TypeSpecifier() : {
+    Token t = null;
+}
+{
+	( t = <VOID> | t = <CHAR> | t = <SHORT> | t = <INT> | t = <LONG> | t =  <FLOAT> |
+	  t = <DOUBLE> | t = <SIGNED> | t = <EXTENSION> |
+	  t = <UNSIGNED> | StructOrUnionSpecifier() | EnumSpecifier() | LOOKAHEAD( { isType(getToken(1).image) } )TypedefName() )
+	    { if(t != null && _verbose) 
+		System.err.println("TypeSpecifier: " + t.image);}
+}
+
+Token TypeQualifier() : {
+    Token t = null;
+}
+{
+    ( t = <CONST> | t = <VOLATILE> )
+	{ return t; }
+}
+
+void StructOrUnionSpecifier() : {}
+{
+	{
+	    if(_verbose)
+		System.err.println("StructOrUnionSpecifier: push FALSE");
+			typedefParsingStack.push(Boolean.FALSE);
+	}
+
+	StructOrUnion() ( LOOKAHEAD(3) [ <IDENTIFIER> ] "{" StructDeclarationList() "}" | <IDENTIFIER> )
+
+	{
+	    if(_verbose)
+		System.out.println("StructDeclarationList: POP");
+		typedefParsingStack.pop();
+	}
+}
+
+Token StructOrUnion() : {
+    Token t = null;
+}
+{
+	( t = <STRUCT> | t  = <UNION> )
+	    { return t; }
+}
+
+void StructDeclarationList() : {}
+{
+	(StructDeclaration())+
+}
+
+void InitDeclaratorList(Vector calls) : {}
+{
+	InitDeclarator(calls) ("," InitDeclarator(calls))*
+	{
+		// Finished with a typedefDeclaration??
+		if(!(typedefParsingStack.empty()) && ((Boolean)typedefParsingStack.peek()).booleanValue()){
+		    if(_verbose)
+			System.err.println("InitDeclarator.StackPOP");
+		   	typedefParsingStack.pop();
+	  }
+	}
+}
+
+void InitDeclarator(Vector calls) : {
+
+}
+{
+	Declarator() [ "=" Initializer(calls) ]
+}
+
+void StructDeclaration() : {}
+{
+    /** modified to parse bit-field */
+	SpecifierQualifierList() StructDeclaratorList() [ ":" <INTEGER_LITERAL> ] ";"
+//     SpecifierQualifierList() 
+// 	(LOOKAHEAD(StructDeclaratorList()) StructDeclaratorList() [ ":" <INTEGER_LITERAL> ]
+// 	 | ":" <INTEGER_LITERAL>) ";"
+
+}
+
+void SpecifierQualifierList() : {}
+{
+	  TypeSpecifier() [ LOOKAHEAD(SpecifierQualifierList())
+	        SpecifierQualifierList() ]|
+	  TypeQualifier() [ LOOKAHEAD(SpecifierQualifierList())
+	        SpecifierQualifierList() ]
+}
+
+void StructDeclaratorList() : {}
+{
+	StructDeclarator() ( "," StructDeclarator() )*
+}
+
+void StructDeclarator() : {}
+{
+	( LOOKAHEAD(3) Declarator() | [ Declarator() ] ":" ConstantExpression() )
+}
+
+void EnumSpecifier() : {}
+{
+	<ENUM> ( LOOKAHEAD(3) [ <IDENTIFIER> ] "{" EnumeratorList() "}" | <IDENTIFIER> )
+}
+
+void EnumeratorList() : {}
+{
+	Enumerator() ("," Enumerator())*
+}
+
+void Enumerator() : {}
+{
+	<IDENTIFIER> [ "=" ConstantExpression() ]
+}
+
+Token Declarator() : {
+    Token t = null;
+}
+{
+    [ Pointer() ] (t = DirectDeclarator())
+	{ return t; }
+}
+
+Token DirectDeclarator() : 
+{ Token t = null;}
+{
+	( t = <IDENTIFIER>
+
+	    { if(!(typedefParsingStack.empty()) && ((Boolean)typedefParsingStack.peek()).booleanValue()){
+				addType(t.image);
+				if(_verbose)
+				System.out.println("added type: " + t.image);
+	}
+	  if(t != null &&_verbose) {
+	      System.out.println("\tcalled: " + t.image + " " + t.beginLine);
+	      System.out.println("\tempty?: " + typedefParsingStack.empty());
+	      if(! typedefParsingStack.empty())
+	      System.out.println("\tpeek: " + ((Boolean)typedefParsingStack.peek()).booleanValue());
+	  }
+	}
+	  | "(" Declarator() ")" )
+
+	( "[" [ ConstantExpression() ] "]" |
+	    LOOKAHEAD(3) "(" ParameterTypeList() ")" |
+	    "(" [ IdentifierList() ] ")" )*
+	    { return t; }
+}
+
+void Pointer() : {}
+{
+	"*" [ TypeQualifierList() ] [ Pointer() ]
+}
+
+void TypeQualifierList() : {}
+{
+	(TypeQualifier())+
+}
+
+void ParameterTypeList() : {}
+{
+	ParameterList() ["," "..." ]
+}
+
+void ParameterList() : {}
+{
+	ParameterDeclaration() (LOOKAHEAD(2) "," ParameterDeclaration())*
+}
+
+void ParameterDeclaration() : {}
+{
+	DeclarationSpecifiers() ( LOOKAHEAD(Declarator()) Declarator() | [ AbstractDeclarator() ] )
+}
+
+void IdentifierList() : {}
+{
+	<IDENTIFIER> ("," <IDENTIFIER>)*
+}
+
+void Initializer(Vector calls) : {}
+{
+	( AssignmentExpression(calls) |
+	  "{" InitializerList(calls) [","] "}" )
+}
+
+void InitializerList(Vector calls) : {}
+{
+	Initializer(calls) (LOOKAHEAD(2) "," Initializer(calls))*
+}
+
+void TypeName() : {}
+{
+	SpecifierQualifierList() [ AbstractDeclarator() ]
+
+}
+
+void AbstractDeclarator() : {}
+{
+	( LOOKAHEAD(3) Pointer() |
+	  [Pointer()] DirectAbstractDeclarator() )
+}
+
+void DirectAbstractDeclarator() : {}
+{
+	( LOOKAHEAD(2) "(" AbstractDeclarator() ")" |
+	               "[" [ConstantExpression()] "]" |
+	               "(" [ParameterTypeList()] ")" )
+
+	  ( "[" [ ConstantExpression() ] "]" | "(" [ ParameterTypeList() ] ")" )*
+}
+
+void TypedefName() : {}
+{
+	<IDENTIFIER>
+}
+
+void Statement(Vector calls) : {}
+{
+	( LOOKAHEAD(2) LabeledStatement(calls) |
+	  ExpressionStatement(calls) |
+	  CompoundStatement(calls) |
+	  SelectionStatement(calls) |
+	  IterationStatement(calls) |
+	  JumpStatement(calls) )
+}
+
+void LabeledStatement(Vector calls) : {}
+{
+	( <IDENTIFIER> ":" Statement(calls) |
+	  <CASE> ConstantExpression() ":" Statement(calls) |
+	  <DFLT> ":" Statement(calls) )
+}
+
+void ExpressionStatement(Vector calls) : {}
+{
+    [ Expression(calls) ] ";"
+}
+
+void CompoundStatement(Vector calls) : {}
+{
+	"{" [ LOOKAHEAD(DeclarationList(new Vector())) DeclarationList(calls) ]
+	    [ StatementList(calls) ]
+	"}"
+}
+
+void StatementList(Vector calls) : {}
+{
+	(Statement(calls))+
+}
+
+void SelectionStatement(Vector calls) : {}
+{
+	( <IF> "(" Expression(calls) ")" Statement(calls) [ LOOKAHEAD(2) <ELSE> Statement(calls) ] |
+	  <SWITCH> "(" Expression(calls) ")" Statement(calls) )
+}
+
+void IterationStatement(Vector calls) : {}
+{
+	( <WHILE> "(" Expression(calls) ")" Statement(calls) |
+	  <DO> Statement(calls) <WHILE> "(" Expression(calls) ")" ";" |
+	  <FOR> "(" [ Expression(calls) ] ";" [ Expression(calls) ] ";" [ Expression(calls) ] ")" Statement(calls) )
+}
+
+void JumpStatement(Vector calls) : {}
+{
+	( <GOTO> <IDENTIFIER> ";" |
+	  <CONTINUE> ";" |
+	  <BREAK> ";" |
+	  <RETURN> [ Expression(calls) ] ";" )
+}
+
+void Expression(Vector calls) : {}
+{
+	AssignmentExpression(calls) ( "," AssignmentExpression(calls) )*
+}
+
+void AssignmentExpression(Vector calls) : {}
+{
+	  LOOKAHEAD(UnaryExpression(new Vector()) AssignmentOperator()) UnaryExpression(calls) AssignmentOperator() AssignmentExpression(calls) |
+	  LOOKAHEAD(3) ConditionalExpression(calls)
+}
+
+void AssignmentOperator() : {}
+{
+	( "=" | "*=" | "/=" | "%=" | "+=" | "-=" | "<<=" | ">>=" | "&=" | "^=" | "|=" )
+}
+
+void ConditionalExpression(Vector calls) : {}
+{
+	LogicalORExpression(calls) [ "?" Expression(calls) ":" ConditionalExpression(calls) ]
+}
+
+void ConstantExpression() : {}
+{
+	ConditionalExpression(new Vector())
+}
+
+void LogicalORExpression(Vector calls) : {}
+{
+	LogicalANDExpression(calls) [ "||" LogicalORExpression(calls) ]
+}
+
+void LogicalANDExpression(Vector calls) : {}
+{
+	InclusiveORExpression(calls) [ "&&" LogicalANDExpression(calls) ]
+}
+
+void InclusiveORExpression(Vector calls) : {}
+{
+	ExclusiveORExpression(calls) [ "|" InclusiveORExpression(calls) ]
+}
+
+void ExclusiveORExpression(Vector calls) : {}
+{
+	ANDExpression(calls) [ "^" ExclusiveORExpression(calls) ]
+}
+
+void ANDExpression(Vector calls) : {}
+{
+	EqualityExpression(calls) [ "&" ANDExpression(calls) ]
+}
+
+void EqualityExpression(Vector calls) : {}
+{
+	RelationalExpression(calls) [ ( "==" | "!=" ) EqualityExpression(calls) ]
+}
+
+void RelationalExpression(Vector calls) : {}
+{
+	ShiftExpression(calls) [ ( "<" | ">" | "<=" | ">=" ) RelationalExpression(calls) ]
+}
+
+void ShiftExpression(Vector calls) : {}
+{
+	AdditiveExpression(calls) [ ( "<<" | ">>" ) ShiftExpression(calls) ]
+}
+
+void AdditiveExpression(Vector calls) : {}
+{
+	MultiplicativeExpression(calls) [ ( "+" | "-" ) AdditiveExpression(calls) ]
+}
+
+void MultiplicativeExpression(Vector calls) : {}
+{
+	CastExpression(calls) [ ( "*" | "/" | "%" ) MultiplicativeExpression(calls) ]
+}
+
+void CastExpression(Vector calls) : {
+    //    System.out.println("Cast:");
+}
+{
+	( LOOKAHEAD("(" TypeName() ")" CastExpression(calls) ) "(" TypeName() ")" CastExpression(calls) |
+	  UnaryExpression(calls) )
+}
+
+void UnaryExpression(Vector calls) : {}
+{
+	( LOOKAHEAD(3) PostfixExpression(calls) |
+	  "++" UnaryExpression(calls) |
+	  "--" UnaryExpression(calls) |
+	  UnaryOperator() CastExpression(calls) |
+	  <SIZEOF> ( LOOKAHEAD(UnaryExpression(calls) ) UnaryExpression(calls) | "(" TypeName() ")" ) )
+}
+
+void UnaryOperator() : {}
+{
+	( "&" | "*" | "+" | "-" | "~" | "!" )
+}
+
+//function call?
+void PostfixExpression(Vector calls) : 
+{
+    Token t = null;
+    boolean is_call = false;
+}
+{
+    (t = PrimaryExpression(calls)) ( "[" Expression(calls) "]" |
+				     "(" [ LOOKAHEAD(ArgumentExpressionList(new Vector()) ) ArgumentExpressionList(calls) ] { is_call = true; } ")" |
+				  "." <IDENTIFIER> |
+				  "->" <IDENTIFIER> |
+				  "++" |
+				  "--" )*
+	{ if(t != null && is_call) {
+	    calls.add(new CallInfo(_filename, t.image, t.beginLine, t.beginColumn));
+	    if(_verbose) 
+		System.out.println("called (added): " + t.image + " " + t.beginLine);
+	} }
+}
+
+Token PrimaryExpression(Vector calls) : 
+{
+    Token t = null;
+}
+{
+	( (t = <IDENTIFIER>) |
+	  Constant() |
+	  "(" Expression(calls) ")" )
+	    { return t; }
+}
+
+void ArgumentExpressionList(Vector calls) : {}
+{
+	AssignmentExpression(calls) ( "," AssignmentExpression(calls) )*
+}
+
+void Constant() : {}
+{
+ <INTEGER_LITERAL> | <FLOATING_POINT_LITERAL> | <CHARACTER_LITERAL> | <STRING_LITERAL>
+}
+
+// Local Variables:
+//   namazu-default-dir:"/home/tak/.JavaCC_namazu /home/tak/.java_namazu"
+// End:
