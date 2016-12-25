@@ -10,6 +10,7 @@ install:
   - unzip javacc-6.0.zip
   - mv javacc-6.0/bin $HOME/bin
   - ls -ld $HOME/bin
+  - ls -l $HOME/bin
   
 script:
   - export PATH=$HOME/bin:$PATH
