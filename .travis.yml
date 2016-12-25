@@ -6,12 +6,9 @@ jdk:
   - openjdk7
 
 install:
-  - wget https://java.net/projects/javacc/downloads/download/javacc-6.0.zip
-  - unzip javacc-6.0.zip
-  - ls -l javacc-6.0/bin
+  - wget https://java.net/projects/javacc/downloads/download/javacc-5.0.zip
+  - unzip javacc-5.0.zip
   - mv javacc-6.0/bin/ $HOME/bin
-  - ls -ld $HOME/bin
-  - ls -l $HOME/bin
   
 script:
   - export PATH=$HOME/bin:$PATH
