@@ -14,8 +14,4 @@ script:
   - export PATH=$HOME/bin:$PATH
   - make
   - java -jar classes/c.jar example/hello.c
-
-os:
-  - linux
-  - osx
   
