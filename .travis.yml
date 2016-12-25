@@ -8,7 +8,8 @@ jdk:
 install:
   - wget https://java.net/projects/javacc/downloads/download/javacc-6.0.zip
   - unzip javacc-6.0.zip
-  - mv javacc-6.0/bin ~/bin
+  - mv javacc-6.0/bin $HOME/bin
+  - ls -ld $HOME/bin
   
 script:
   - export PATH=$HOME/bin:$PATH
