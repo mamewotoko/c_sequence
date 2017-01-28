@@ -1,4 +1,4 @@
-c_sequence
+c_sequence [![Build Status](https://travis-ci.org/mamewotoko/c_sequence.svg?branch=master)](https://travis-ci.org/mamewotoko/c_sequence)
 ==========
 A sample C parser application using [JavaCC](https://javacc.java.net/)
 
@@ -29,6 +29,3 @@ TODO
 ----
 Takashi Masuyama < mamewotoko@gmail.com >  
 http://mamewo.ddo.jp/
-
-
-
